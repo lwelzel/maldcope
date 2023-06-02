@@ -301,3 +301,5 @@ fabric.properties
 *.fmt
 *.par
 *.hdf5
+*.npy
+*.csv#
