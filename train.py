@@ -23,7 +23,7 @@ from lampe.utils import GDStep
 
 from zuko.flows import NAF, UNAF, NSF, MAF, GMM, CNF
 
-from stat_tests import MMDLoss
+from stat_tests import VecMMDLoss
 
 # default `log_dir` is "runs" - we'll be more specific here
 writer = SummaryWriter('runs/sbiear_experiment1')
@@ -45,7 +45,7 @@ class CustomNPELoss(NPELoss):
     def __init__(self, estimator: nn.Module):
         super().__init__(estimator)
 
-    def forward(self, theta: Tensor, x: Tensor) -> Tensor:
+    def forward(self, theta: Tensor, x: Tensor, x_prime: Tensor) -> Tensor:
         r"""
         Arguments:
             theta: The parameters :math:`\theta`, with shape :math:`(N, D)`.
@@ -55,7 +55,7 @@ class CustomNPELoss(NPELoss):
             The scalar loss :math:`l`.
         """
 
-        log_p = self.estimator(theta, x)
+        log_p = self.estimator(theta, x, x_prime)
 
         return -log_p.mean()
 
@@ -64,7 +64,7 @@ class DivergenceNPELoss(NPELoss):
     def __init__(self, estimator: nn.Module, n_samples=2**3):
         super().__init__(estimator)
 
-        self.mmd_loss = MMDLoss().cuda()
+        self.mmd_loss = VecMMDLoss().cuda()
         self.n_samples = n_samples
 
     def test_MMD(self, theta: Tensor, x: Tensor) -> Tensor:
@@ -158,40 +158,73 @@ class BaseConvBlock(nn.Module):
         return self.block(x)
 
 
-class NPEWithEmbedding(nn.Module):
-    def __init__(self):
+class CNNEmbedding(nn.Module):
+    def __init__(self, ):
         super().__init__()
 
         self.embedding = nn.Sequential(
-            # SoftClip(1000.0),
             MeanSubtractionLayer(),
             BaseConvBlock(
                 channels_in=1,
-                channels_out=128,
+                channels_out=512,
                 kernel_size=3,
                 dilation=1,
             ),
             BaseConvBlock(
-                channels_in=128,
-                channels_out=64,
+                channels_in=512,
+                channels_out=256,
                 kernel_size=3,
             ),
             BaseConvBlock(
-                channels_in=64,
+                channels_in=256,
                 channels_out=64,
                 kernel_size=3,
             ),
             nn.Flatten(),
+        )
+
+    def forward(self, x):
+        return self.embedding(x)
+
+
+class MultiInputEmbedding(nn.Module):
+    def __init__(self, ):
+        super().__init__()
+
+        self.spectrum_embedding = CNNEmbedding()
+
+        self.aux_embedding = nn.Sequential(
             ResMLP(
-                in_features=256,
+                in_features=8,
+                out_features=8,
+                hidden_features=[16] * 1 + [8] * 1,
+                activation=nn.ELU,
+                normalize=True,
+            ),
+        )
+
+        self.embedding = nn.Sequential(
+            ResMLP(
+                in_features=256 + 8,
                 out_features=64,
                 hidden_features=[512] * 1 + [256] * 2 + [128] * 5 + [64] * 5,
                 activation=nn.ELU,
                 normalize=True,
             ),
-            # nn.BatchNorm1d(16)
-
         )
+
+    def forward(self, x, x_prime):
+        z0 = self.spectrum_embedding(x)
+        z1 = self.aux_embedding(x_prime[:, :8])
+        z = torch.cat((z0, z1), dim=1)
+        return self.embedding(z)
+
+
+class NPEWithEmbedding(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.embedding = MultiInputEmbedding()
 
         self.npe = NPE(
             7,  # theta_dim
@@ -202,25 +235,22 @@ class NPEWithEmbedding(nn.Module):
             activation=nn.ELU,
         )
 
-        self.decoder = nn.Sequential(
+    def forward(self, theta: Tensor, x: Tensor, x_prime: Tensor) -> Tensor:
+        return self.npe(theta, self.embedding(x, x_prime))
 
-        )
-
-    def forward(self, theta: Tensor, x: Tensor) -> Tensor:
-        return self.npe(theta, self.embedding(x))
-
-    def flow(self, x: Tensor):  # -> Distribution
-        return self.npe.flow(self.embedding(x))
+    def flow(self, x: Tensor, x_prime: Tensor):  # -> Distribution
+        return self.npe.flow(self.embedding(x, x_prime))
 
 
 def train(i: int = 512):
     # Data
+    input_type = "_aux" #  "_full_norm_aux"  # "_aux"
 
     batch_size = 2048  # 2048  # 4096
     val_batch_size = 128  # int(np.clip(batch_size / 2**3, a_min=64, a_max=512))
 
 
-    trainset = H5Dataset("/home/lwelzel/Documents/git/maldcope/data/TrainingData/training_dataset.h5",
+    trainset = H5Dataset(f"/home/lwelzel/Documents/git/maldcope/data/TrainingData/training_dataset{input_type}.h5",
                          batch_size=batch_size,
                          shuffle=True,
                          ).to_memory()
@@ -229,12 +259,12 @@ def train(i: int = 512):
     loss_iters = int(2**np.floor(np.log2(n_train_samples / batch_size)))
     print(f"N samples: {n_train_samples}, with batches of {batch_size} for {loss_iters} iters per epoch.")
 
-    validset = H5Dataset("/home/lwelzel/Documents/git/maldcope/data/TrainingData/validation_dataset.h5",
+    validset = H5Dataset(f"/home/lwelzel/Documents/git/maldcope/data/TrainingData/validation_dataset{input_type}.h5",
                          batch_size=val_batch_size,
                          shuffle=True
                          ).to_memory()
 
-    testset = H5Dataset("/home/lwelzel/Documents/git/maldcope/data/TrainingData/testing_dataset.h5",
+    testset = H5Dataset(f"/home/lwelzel/Documents/git/maldcope/data/TrainingData/testing_dataset{input_type}.h5",
                          batch_size=val_batch_size,
                          shuffle=True
                          ).to_memory()
@@ -244,7 +274,7 @@ def train(i: int = 512):
     loss = CustomNPELoss(estimator)  # AMNPELoss(estimator, mask_dist=Categorical(torch.tensor([0.5, 0.5]).cuda()))
     optimizer = optim.AdamW(estimator.parameters(),
                             lr=1e-2,
-                            weight_decay=1e-1)
+                            weight_decay=1e-5)
     step = GDStep(optimizer,
                   clip=1.0)
     scheduler = sched.ReduceLROnPlateau(
@@ -262,18 +292,18 @@ def train(i: int = 512):
     print(f"Model Parameters: {count_parameters(estimator)}\n")
 
     def noisy(x: Tensor) -> Tensor:
-        return torch.normal(mean=x[:, 0], std=x[:, 1]).reshape((-1, 1, 52))
+        return torch.normal(mean=x[:, 0], std=x[:, 1]).reshape((-1, 1, 52)), x[:, 2]
         # return x[:, 0].reshape((-1, 1, 52))
 
 
     def noise_pipe(theta: Tensor, x: Tensor) -> Tensor:
         theta, x = theta.cuda(), x.cuda()
-        x = noisy(x)
-        return loss(theta, x)
+        x, x_prime = noisy(x)
+        return loss(theta, x, x_prime)
 
     def clean_pipe(theta: Tensor, x: Tensor) -> Tensor:
         theta, x = theta.cuda(), x.cuda()
-        return loss(theta, x[:, 0].reshape((-1, 1, 52)))
+        return loss(theta, x[:, 0].reshape((-1, 1, 52)), x[:, 2])
 
     for epoch in tqdm(range(i), unit='epoch'):
         estimator.train()

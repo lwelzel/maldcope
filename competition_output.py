@@ -59,7 +59,7 @@ def rescale_output(input, forward=False):
 
 def produce_AMLDC_output(model=None, dataset_path=None, verbose=False):
     if model is None:
-        model = Path('/home/lwelzel/Documents/git/maldcope/runs/sbiear_experiment1/state.pth')
+        model = Path('/home/lwelzel/Documents/git/maldcope/runs/MALDCOPE_REV_C/state.pth')
     if dataset_path is None:
         dataset_path = Path('/home/lwelzel/Documents/git/maldcope/data/TestData/testing_dataset.h5')
 
@@ -73,24 +73,35 @@ def produce_AMLDC_output(model=None, dataset_path=None, verbose=False):
 
     testset = H5Dataset(dataset_path)
 
-    n_samples = 2 ** 10
-    n_select = 1000
+    n_samples = 2 ** 11
+    n_select = 1250
     traces = torch.zeros((len(testset), n_select, 7))
 
     _n = n_select
     for i, (theta, x) in tqdm(enumerate(testset),
                               total=len(testset)):
-        x = x[0].cuda().reshape(-1, 1, 52)
+
+        x, x_prime = x[0].cuda().reshape(-1, 1, 52), x[2].cuda().reshape(-1, 52)
 
         with torch.no_grad():
-            theta = estimator.flow(x).sample((n_samples,))
+            theta = estimator.flow(x, x_prime).sample((n_samples,))
 
         theta = theta.reshape((-1, 7))
         good_idx = torch.isfinite(torch.sum(theta, dim=1))
 
         if torch.sum(torch.sum(good_idx)) < n_select:
+            temp_samples = int(n_samples * (n_samples / torch.sum(torch.isfinite(torch.sum(theta, dim=1))).cpu().numpy()) * 2)
+            print(f"Too few samples, sampling again for {temp_samples} draws.")
+            with torch.no_grad():
+                theta = estimator.flow(x, x_prime).sample((temp_samples,))
+
+            theta = theta.reshape((-1, 7))
+            good_idx = torch.isfinite(torch.sum(theta, dim=1))
+
+
             print(f"Not enough valid samples: {torch.sum(torch.sum(good_idx))} / {n_select} required")
             _n = torch.minimum(torch.tensor(_n), torch.sum(good_idx))
+            _n = int(_n.cpu().numpy())
 
         theta = theta[good_idx]
         theta = theta[:_n]
@@ -100,17 +111,21 @@ def produce_AMLDC_output(model=None, dataset_path=None, verbose=False):
 
 
     traces = traces[:, :_n].cpu().numpy()
-    weights = (np.ones((len(testset), _n)) / _n)
+    weights = (np.ones((len(testset), _n)) / int(_n))
     to_regular_track_format(traces, weights, path=dataset_path.parent, name="RT_submission.hdf5")
 
+    q1, q2, q3 = np.quantile(traces, [0.16, 0.5, 0.84], axis=1)
+
+    to_light_track_format(q1, q2, q3, path=dataset_path.parent, name="LT_submission.csv")
+
     if verbose:
-        sample_id = np.random.randint(0, 680)
+        sample_id = np.random.randint(0, 9)
         theta_star, x_star = testset[sample_id]
         theta_star, x_star = theta_star.cuda(), x_star.cuda()
-        x_star = x_star[0].reshape((1, 1, -1))
+        x_star, x_prime_star = x_star[0].reshape((1, 1, -1)), x_star[2].reshape((1, -1))
 
         with torch.no_grad():
-            theta = estimator.flow(x_star.cuda()).sample((2 ** 12,))
+            theta = estimator.flow(x_star.cuda(), x_prime_star.cuda()).sample((2 ** 12,))
 
         theta = theta.reshape((-1, 7))
         theta = rescale_output(theta, forward=False)
@@ -138,7 +153,7 @@ def produce_AMLDC_output(model=None, dataset_path=None, verbose=False):
         fig.savefig("/home/lwelzel/Documents/git/maldcope/random_corner_AMLDC_test_data.png", dpi=300)
 
 
-def to_light_track_format(q1_array, q2_array, q3_array, columns=None, name="LT_submission.csv"):
+def to_light_track_format(q1_array, q2_array, q3_array, path, columns=None, name="LT_submission.csv"):
     """Helper function to prepare submission file for the light track,
     we assume the test data is arranged in assending order of the planet ID.
 
@@ -151,11 +166,14 @@ def to_light_track_format(q1_array, q2_array, q3_array, columns=None, name="LT_s
     Returns:
         Pandas DataFrame object
     """
+
+    submit_file = str(path / name)
+
     # create empty array
     LT_submission_df = pd.DataFrame(columns=columns)
     # sanity check - length should be equal
     assert len(q1_array) == len(q2_array) == len(q3_array)
-    targets_label = ['T', 'log_H2O', 'log_CO2', 'log_CH4', 'log_CO', 'log_NH3']
+    targets_label = ["planet_radius", 'T', 'log_H2O', 'log_CO2', 'log_CO', 'log_CH4', 'log_NH3']
     # create columns for df
     default_quartiles = ['q1', 'q2', 'q3']
     default_columns = []
@@ -174,7 +192,7 @@ def to_light_track_format(q1_array, q2_array, q3_array, columns=None, name="LT_s
             quartiles_dict[f'{t}_q3'] = q3_array[i, t_idx]
         LT_submission_df = pd.concat([LT_submission_df, pd.DataFrame.from_records([quartiles_dict])], axis=0,
                                      ignore_index=True)
-    LT_submission_df.to_csv(name, index=False)
+    LT_submission_df.to_csv(submit_file, index=False)
     return LT_submission_df
 
 
@@ -197,7 +215,7 @@ def to_regular_track_format(tracedata_arr, weights_arr, path, name="RT_submissio
         ## sanity check - weights must be able to sum to one.
         assert np.isclose(np.sum(weights_arr[n]), 1)
 
-        grp = RT_submission.create_group(f"Planet_{n}")
+        grp = RT_submission.create_group(f"Planet_public{n+1}")
         pl_id = grp.attrs['ID'] = n
         tracedata = grp.create_dataset('tracedata', data=tracedata_arr[n])
         weight_adjusted = weights_arr[n]
