@@ -16,7 +16,7 @@ from lampe.data import H5Dataset
 from lampe.diagnostics import expected_coverage_mc
 from lampe.plots import nice_rc, corner, mark_point, coverage_plot
 
-from train import NPEWithEmbedding
+from train_KLD import NPEWithEmbedding
 
 def rescale_output(input, forward=False):
 
@@ -59,7 +59,7 @@ def rescale_output(input, forward=False):
 
 def produce_AMLDC_output(model=None, dataset_path=None, verbose=False):
     if model is None:
-        model = Path('/home/lwelzel/Documents/git/maldcope/runs/MALDCOPE_REV_C/state.pth')
+        model = Path('/home/lwelzel/Documents/git/maldcope/runs/KLD_experiment2/state.pth')
     if dataset_path is None:
         dataset_path = Path('/home/lwelzel/Documents/git/maldcope/data/TestData/testing_dataset.h5')
 

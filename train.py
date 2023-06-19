@@ -23,7 +23,7 @@ from lampe.utils import GDStep
 
 from zuko.flows import NAF, UNAF, NSF, MAF, GMM, CNF
 
-from stat_tests import VecMMDLoss
+from stat_tests import VecMMD
 
 # default `log_dir` is "runs" - we'll be more specific here
 writer = SummaryWriter('runs/sbiear_experiment1')
@@ -64,7 +64,7 @@ class DivergenceNPELoss(NPELoss):
     def __init__(self, estimator: nn.Module, n_samples=2**3):
         super().__init__(estimator)
 
-        self.mmd_loss = VecMMDLoss().cuda()
+        self.mmd_loss = VecMMD().cuda()
         self.n_samples = n_samples
 
     def test_MMD(self, theta: Tensor, x: Tensor) -> Tensor:
@@ -236,6 +236,7 @@ class NPEWithEmbedding(nn.Module):
         )
 
     def forward(self, theta: Tensor, x: Tensor, x_prime: Tensor) -> Tensor:
+        print(theta.shape, x.shape, x_prime.shape)
         return self.npe(theta, self.embedding(x, x_prime))
 
     def flow(self, x: Tensor, x_prime: Tensor):  # -> Distribution
