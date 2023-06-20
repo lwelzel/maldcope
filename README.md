@@ -4,11 +4,11 @@
 My attempt at the Ariel Machine Learning Data Challenge (https://www.ariel-datachallenge.space). 
 The task is to classify Exoplanet Atmospheres based on their Transmission spectra based on simulated truth-observation pairs. 
 To this end I implement several SOTA simulation-based inference (SBI) methods, all based Neural Posterior Estimation (NPE) Normalizing Flows (NF).
-A large part of the challenge is the missspecified model and out-of-distribution (OOD) test data. 
+A large part of the challenge is the misspecified model and out-of-distribution (OOD) test data. 
 In addition to this the "ground-truth" traces were obtained by MultiNest in combination with Taurex,
 which is suspected to be overconfident (under-dispersed). 
 Lastly, the ground-truth traces and the forward model (FM) parameters show significant divergence so that the data,
-parameterized by the forward model, is missspecified twice,
+parameterized by the forward model, is misspecified twice,
 once by the limitations of Taurex and once by the limitations fo the MultiNest retrieval.
 These challenges make the Ariel Machine Learning Data Challenge problem realistic compared to actual retrievals.
 
